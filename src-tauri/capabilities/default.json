@@ -1,0 +1,42 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "sql:default",
+    "sql:allow-execute",
+    "notification:default",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-mkdir",
+    "fs:allow-copy-file",
+    "fs:allow-write-file",
+    "fs:allow-read-file",
+    "fs:allow-exists",
+    "fs:allow-remove",
+    "fs:allow-appdata-read-recursive",
+    "fs:allow-appdata-write-recursive",
+    "fs:allow-appconfig-read-recursive",
+    "fs:allow-appconfig-write-recursive",
+    "fs:allow-document-write-recursive",
+    "fs:allow-download-write-recursive",
+    "fs:allow-desktop-write-recursive",
+    "fs:allow-home-read-recursive",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$APPDATA" },
+        { "path": "$APPDATA/**" },
+        { "path": "$APPCONFIG" },
+        { "path": "$APPCONFIG/**" },
+        { "path": "$HOME/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DESKTOP/**" }
+      ]
+    }
+  ]
+}
