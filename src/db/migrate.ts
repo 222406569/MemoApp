@@ -23,7 +23,8 @@ const SCHEMA_STATEMENTS = [
     required_at TEXT,
     title TEXT NOT NULL DEFAULT '',
     detail TEXT NOT NULL DEFAULT '',
-    reminded INTEGER NOT NULL DEFAULT 0
+    reminded INTEGER NOT NULL DEFAULT 0,
+    last_reminded_at TEXT
   )`,
   `CREATE TABLE IF NOT EXISTS attachments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,22 +51,20 @@ const SCHEMA_STATEMENTS = [
     enabled INTEGER NOT NULL DEFAULT 1,
     config_json TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS reminder_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    interval_minutes INTEGER
+  )`,
 ];
 
-export async function migrate(): Promise<void> {
+async function hasColumn(table: string, column: string): Promise<boolean> {
   const db = await getDb();
-  await db.execute("PRAGMA foreign_keys = ON");
-  for (const sql of SCHEMA_STATEMENTS) {
-    await db.execute(sql);
-  }
+  const cols = await db.select<{ name: string }[]>(`PRAGMA table_info(${table})`);
+  return cols.some((col) => col.name === column);
+}
 
-  const versions = await db.select<{ version: number }[]>(
-    "SELECT version FROM schema_migrations ORDER BY version"
-  );
-  if (versions.length > 0) {
-    return;
-  }
-
+async function applyMigration1(): Promise<void> {
+  const db = await getDb();
   await db.execute("BEGIN");
   try {
     const seedStatuses = [
@@ -108,5 +107,50 @@ export async function migrate(): Promise<void> {
   } catch (error) {
     await db.execute("ROLLBACK");
     throw error;
+  }
+}
+
+async function applyMigration2(): Promise<void> {
+  const db = await getDb();
+  const needsLastRemindedAt = !(await hasColumn("items", "last_reminded_at"));
+  await db.execute("BEGIN");
+  try {
+    if (needsLastRemindedAt) {
+      await db.execute("ALTER TABLE items ADD COLUMN last_reminded_at TEXT");
+    }
+    await db.execute(
+      `CREATE TABLE IF NOT EXISTS reminder_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        interval_minutes INTEGER
+      )`
+    );
+    await db.execute(
+      "INSERT OR IGNORE INTO reminder_settings (id, interval_minutes) VALUES (1, NULL)"
+    );
+    await db.execute("INSERT INTO schema_migrations (version) VALUES (2)");
+    await db.execute("COMMIT");
+  } catch (error) {
+    await db.execute("ROLLBACK");
+    throw error;
+  }
+}
+
+export async function migrate(): Promise<void> {
+  const db = await getDb();
+  await db.execute("PRAGMA foreign_keys = ON");
+  for (const sql of SCHEMA_STATEMENTS) {
+    await db.execute(sql);
+  }
+
+  const versions = await db.select<{ version: number }[]>(
+    "SELECT version FROM schema_migrations ORDER BY version"
+  );
+  const applied = new Set(versions.map((row) => row.version));
+
+  if (!applied.has(1)) {
+    await applyMigration1();
+  }
+  if (!applied.has(2)) {
+    await applyMigration2();
   }
 }

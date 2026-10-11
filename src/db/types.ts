@@ -48,6 +48,7 @@ export type Item = {
   title: string;
   detail: string;
   reminded: number;
+  last_reminded_at: string | null;
   customer_name: string | null;
   status_name: string | null;
 };
@@ -156,4 +157,8 @@ export function fromTimestamp(ts: number | null | undefined): string | null {
 
 export function shiftHours(base: Date, hours: number): Date {
   return new Date(base.getTime() + hours * 60 * 60 * 1000);
+}
+
+export function shiftMinutes(base: Date, minutes: number): Date {
+  return new Date(base.getTime() + minutes * 60 * 1000);
 }

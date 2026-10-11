@@ -81,12 +81,17 @@ SELECT
   i.title,
   i.detail,
   i.reminded,
+  i.last_reminded_at,
   c.name AS customer_name,
   s.name AS status_name
 FROM items i
 LEFT JOIN customers c ON c.id = i.customer_id
 LEFT JOIN statuses s ON s.id = i.status_id
 `;
+
+function lastRemindedAtForWrite(reminded: number): string | null {
+  return reminded === 1 ? formatLocalDateTime(new Date()) : null;
+}
 
 export async function listItems(filters: ItemFilters, sortRules: SortRule[]): Promise<Item[]> {
   const db = await getDb();
@@ -107,8 +112,8 @@ export async function getItem(id: number): Promise<Item | null> {
 export async function createItem(data: ItemWrite): Promise<number> {
   const db = await getDb();
   const result = await db.execute(
-    `INSERT INTO items (customer_id, status_id, created_at, required_at, title, detail, reminded)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    `INSERT INTO items (customer_id, status_id, created_at, required_at, title, detail, reminded, last_reminded_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       data.customer_id,
       data.status_id,
@@ -117,6 +122,7 @@ export async function createItem(data: ItemWrite): Promise<number> {
       data.title,
       data.detail,
       data.reminded,
+      lastRemindedAtForWrite(data.reminded),
     ]
   );
   return Number(result.lastInsertId);
@@ -124,11 +130,30 @@ export async function createItem(data: ItemWrite): Promise<number> {
 
 export async function updateItem(id: number, data: ItemWrite): Promise<void> {
   const db = await getDb();
+  if (data.reminded === 0) {
+    await db.execute(
+      `UPDATE items
+       SET customer_id = $1, status_id = $2, required_at = $3, title = $4, detail = $5,
+           reminded = 0, last_reminded_at = NULL
+       WHERE id = $6`,
+      [data.customer_id, data.status_id, data.required_at, data.title, data.detail, id]
+    );
+    return;
+  }
   await db.execute(
     `UPDATE items
-     SET customer_id = $1, status_id = $2, required_at = $3, title = $4, detail = $5, reminded = $6
+     SET customer_id = $1, status_id = $2, required_at = $3, title = $4, detail = $5,
+         reminded = 1, last_reminded_at = COALESCE(last_reminded_at, $6)
      WHERE id = $7`,
-    [data.customer_id, data.status_id, data.required_at, data.title, data.detail, data.reminded, id]
+    [
+      data.customer_id,
+      data.status_id,
+      data.required_at,
+      data.title,
+      data.detail,
+      formatLocalDateTime(new Date()),
+      id,
+    ]
   );
 }
 
@@ -147,11 +172,30 @@ export async function batchUpdateItems(ids: number[], patch: ItemBatchPatch): Pr
     return;
   }
   await withTransaction(async (db: Database) => {
-    const setSql = entries.map(([key], idx) => `${key} = $${idx + 1}`).join(", ");
-    const values = entries.map(([, value]) => value);
-    const idPlaceholders = ids.map((_, idx) => `$${entries.length + idx + 1}`).join(", ");
+    const setParts: string[] = [];
+    const values: unknown[] = [];
+    let idx = 1;
+    for (const [key, value] of entries) {
+      if (key === "reminded") {
+        setParts.push(`reminded = $${idx}`);
+        values.push(value);
+        idx += 1;
+        if (value === 0) {
+          setParts.push("last_reminded_at = NULL");
+        } else {
+          setParts.push(`last_reminded_at = COALESCE(last_reminded_at, $${idx})`);
+          values.push(formatLocalDateTime(new Date()));
+          idx += 1;
+        }
+        continue;
+      }
+      setParts.push(`${key} = $${idx}`);
+      values.push(value);
+      idx += 1;
+    }
+    const idPlaceholders = ids.map((_, idIdx) => `$${idx + idIdx}`).join(", ");
     await db.execute(
-      `UPDATE items SET ${setSql} WHERE id IN (${idPlaceholders})`,
+      `UPDATE items SET ${setParts.join(", ")} WHERE id IN (${idPlaceholders})`,
       [...values, ...ids]
     );
   });
@@ -159,5 +203,8 @@ export async function batchUpdateItems(ids: number[], patch: ItemBatchPatch): Pr
 
 export async function markReminded(id: number): Promise<void> {
   const db = await getDb();
-  await db.execute("UPDATE items SET reminded = 1 WHERE id = $1", [id]);
+  await db.execute(
+    "UPDATE items SET reminded = 1, last_reminded_at = $1 WHERE id = $2",
+    [formatLocalDateTime(new Date()), id]
+  );
 }

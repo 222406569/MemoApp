@@ -19,7 +19,13 @@ import { listStatuses } from "../db/statuses";
 import { exporters } from "../db/export";
 import { listItems } from "../db/items";
 import { loadDefaultFilters } from "../db/presets";
-import { listReminderRules, replaceReminderRules, scanAndNotify } from "../db/reminders";
+import {
+  getReminderIntervalMinutes,
+  listReminderRules,
+  replaceReminderRules,
+  scanAndNotify,
+  setReminderIntervalMinutes,
+} from "../db/reminders";
 import { listSortRules, replaceSortRules } from "../db/sort";
 import {
   fromTimestamp,
@@ -39,6 +45,7 @@ const customers = ref<Customer[]>([]);
 const statuses = ref<Status[]>([]);
 const sortDraft = ref<SortRule[]>([]);
 const reminderDraft = ref<ReminderRule[]>([]);
+const reminderIntervalMinutes = ref<number | null>(null);
 
 const sortFieldOptions: SelectOption[] = Object.entries(SORT_FIELD_LABELS).map(
   ([value, label]) => ({ value, label })
@@ -105,6 +112,7 @@ async function reload() {
   statuses.value = await listStatuses();
   sortDraft.value = await listSortRules();
   reminderDraft.value = await listReminderRules();
+  reminderIntervalMinutes.value = await getReminderIntervalMinutes();
 }
 
 function addSortRule() {
@@ -157,6 +165,12 @@ async function saveSort() {
 
 async function saveReminders() {
   try {
+    const interval = reminderIntervalMinutes.value;
+    if (interval != null && (!Number.isInteger(interval) || interval < 1)) {
+      message.error("提醒间隔最短为 1 分钟");
+      return;
+    }
+    await setReminderIntervalMinutes(interval);
     await replaceReminderRules(
       reminderDraft.value.map((rule) => ({
         field: rule.field,
@@ -231,8 +245,22 @@ onMounted(() => {
     </n-card>
 
     <n-card title="提醒条件">
-      <p>启用的规则全部满足时才会提醒。命中后弹出系统通知，并把事项的「是否提醒」标为是。</p>
+      <p>
+        启用的规则全部满足时才会提醒。命中后弹出系统通知，并把事项的「是否提醒」标为是。提醒间隔留空时每个事项只提醒一次；填写后，仍满足条件的事项按该间隔重复弹出系统通知（最短 1 分钟）。
+      </p>
       <n-space vertical>
+        <n-form label-placement="left" label-width="120" :show-feedback="false">
+          <n-form-item label="提醒间隔（分钟）">
+            <n-input-number
+              v-model:value="reminderIntervalMinutes"
+              :min="1"
+              :precision="0"
+              clearable
+              placeholder="留空则只提醒一次"
+              style="width: 220px"
+            />
+          </n-form-item>
+        </n-form>
         <n-card v-for="(rule, index) in reminderDraft" :key="rule.id" size="small">
           <n-form label-placement="left" label-width="90" :show-feedback="false">
             <n-space align="center" wrap>

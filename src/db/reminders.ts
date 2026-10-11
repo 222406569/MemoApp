@@ -8,6 +8,7 @@ import { markReminded } from "./items";
 import {
   formatLocalDateTime,
   shiftHours,
+  shiftMinutes,
   type Item,
   type ReminderConfig,
   type ReminderField,
@@ -50,6 +51,32 @@ export async function replaceReminderRules(
       [rule.field, rule.enabled ? 1 : 0, JSON.stringify(rule.config)]
     );
   }
+}
+
+export async function getReminderIntervalMinutes(): Promise<number | null> {
+  const db = await getDb();
+  const rows = await db.select<{ interval_minutes: number | null }[]>(
+    "SELECT interval_minutes FROM reminder_settings WHERE id = 1"
+  );
+  const value = rows[0]?.interval_minutes;
+  if (value == null) {
+    return null;
+  }
+  return Number(value);
+}
+
+export async function setReminderIntervalMinutes(minutes: number | null): Promise<void> {
+  if (minutes != null) {
+    if (!Number.isInteger(minutes) || minutes < 1) {
+      throw new Error("提醒间隔最短为 1 分钟");
+    }
+  }
+  const db = await getDb();
+  await db.execute(
+    `INSERT INTO reminder_settings (id, interval_minutes) VALUES (1, $1)
+     ON CONFLICT(id) DO UPDATE SET interval_minutes = excluded.interval_minutes`,
+    [minutes]
+  );
 }
 
 function textClause(
@@ -156,9 +183,24 @@ export async function findItemsToRemind(): Promise<Item[]> {
   }
   const db = await getDb();
   const now = new Date();
-  const clauses: string[] = ["i.reminded = 0"];
+  const intervalMinutes = await getReminderIntervalMinutes();
+  const clauses: string[] = [];
   const params: unknown[] = [];
   let index = 1;
+
+  if (intervalMinutes == null) {
+    clauses.push("i.reminded = 0");
+  } else {
+    await db.execute(
+      "UPDATE items SET last_reminded_at = $1 WHERE reminded = 1 AND last_reminded_at IS NULL",
+      [formatLocalDateTime(now)]
+    );
+    const threshold = formatLocalDateTime(shiftMinutes(now, -intervalMinutes));
+    clauses.push(`(i.last_reminded_at IS NULL OR i.last_reminded_at <= $${index})`);
+    params.push(threshold);
+    index += 1;
+  }
+
   for (const rule of rules) {
     const piece = ruleToSql(rule, now, index);
     clauses.push(`(${piece.sql})`);
@@ -167,7 +209,7 @@ export async function findItemsToRemind(): Promise<Item[]> {
   }
   return db.select<Item[]>(
     `SELECT i.id, i.customer_id, i.status_id, i.created_at, i.required_at, i.title, i.detail, i.reminded,
-            c.name AS customer_name, s.name AS status_name
+            i.last_reminded_at, c.name AS customer_name, s.name AS status_name
      FROM items i
      LEFT JOIN customers c ON c.id = i.customer_id
      LEFT JOIN statuses s ON s.id = i.status_id
