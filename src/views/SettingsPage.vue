@@ -317,6 +317,7 @@ onMounted(() => {
                 <n-date-picker
                   :value="absoluteRange(rule)"
                   type="datetimerange"
+                  format="yyyy-MM-dd HH:mm"
                   clearable
                   @update:value="(v: [number, number] | null) => setAbsoluteRange(rule, v)"
                 />

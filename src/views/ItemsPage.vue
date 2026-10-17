@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { h, onMounted, reactive, ref } from "vue";
+import { computed, h, onMounted, onUnmounted, reactive, ref } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   NButton,
@@ -36,7 +37,9 @@ import {
 import { loadDefaultFilters, saveDefaultFilters } from "../db/presets";
 import { listSortRules } from "../db/sort";
 import {
+  displayElapsed,
   emptyFilters,
+  formatDisplayDateTime,
   fromTimestamp,
   parseLocalDateTime,
   type Attachment,
@@ -60,6 +63,11 @@ const rows = ref<Item[]>([]);
 const checked = ref<number[]>([]);
 const loading = ref(false);
 
+const editing = ref(false);
+const savingEdits = ref(false);
+const drafts = ref<Item[]>([]);
+const originalRows = ref<Item[]>([]);
+
 const showForm = ref(false);
 const editingId = ref<number | null>(null);
 const form = reactive<ItemWrite>({
@@ -69,8 +77,12 @@ const form = reactive<ItemWrite>({
   title: "",
   detail: "",
   reminded: 0,
+  started_at: null,
+  finished_at: null,
 });
 const formRequiredAt = ref<number | null>(null);
+const formStartedAt = ref<number | null>(null);
+const formFinishedAt = ref<number | null>(null);
 const attachments = ref<Attachment[]>([]);
 
 const showBatch = ref(false);
@@ -95,10 +107,95 @@ const batchRequiredAt = ref<number | null>(null);
 const createdRange = ref<[number, number] | null>(null);
 const requiredRange = ref<[number, number] | null>(null);
 
+const tableData = computed(() => (editing.value ? drafts.value : rows.value));
+const tableScrollX = computed(() => (editing.value ? 2240 : 1760));
+const elapsedNow = ref(Date.now());
+let elapsedTimer: number | null = null;
+
 const customerOptions = (): SelectOption[] =>
   customers.value.map((c) => ({ label: c.name, value: c.id }));
 const statusOptions = (): SelectOption[] =>
   statuses.value.map((s) => ({ label: s.name, value: s.id }));
+
+function itemWriteEquals(a: Item, b: Item): boolean {
+  return (
+    a.customer_id === b.customer_id &&
+    a.status_id === b.status_id &&
+    a.required_at === b.required_at &&
+    a.title === b.title &&
+    a.detail === b.detail &&
+    a.reminded === b.reminded &&
+    a.started_at === b.started_at &&
+    a.finished_at === b.finished_at
+  );
+}
+
+function hasUnsavedChanges(): boolean {
+  if (!editing.value) {
+    return false;
+  }
+  const originals = new Map(originalRows.value.map((row) => [row.id, row]));
+  return drafts.value.some((draft) => {
+    const original = originals.get(draft.id);
+    return original != null && !itemWriteEquals(draft, original);
+  });
+}
+
+function clearEditState() {
+  editing.value = false;
+  drafts.value = [];
+  originalRows.value = [];
+}
+
+function enterEditMode() {
+  originalRows.value = rows.value.map((row) => ({ ...row }));
+  drafts.value = rows.value.map((row) => ({ ...row }));
+  editing.value = true;
+}
+
+async function saveEditMode() {
+  const originals = new Map(originalRows.value.map((row) => [row.id, row]));
+  const changed = drafts.value.filter((draft) => {
+    const original = originals.get(draft.id);
+    return original != null && !itemWriteEquals(draft, original);
+  });
+
+  if (changed.length === 0) {
+    clearEditState();
+    return;
+  }
+
+  savingEdits.value = true;
+  try {
+    for (const draft of changed) {
+      await updateItem(draft.id, {
+        customer_id: draft.customer_id,
+        status_id: draft.status_id,
+        required_at: draft.required_at,
+        title: draft.title,
+        detail: draft.detail,
+        reminded: draft.reminded,
+        started_at: draft.started_at,
+        finished_at: draft.finished_at,
+      });
+    }
+    clearEditState();
+    await search();
+    message.success("已保存");
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : String(e));
+  } finally {
+    savingEdits.value = false;
+  }
+}
+
+function toggleEditMode() {
+  if (editing.value) {
+    void saveEditMode();
+  } else {
+    enterEditMode();
+  }
+}
 
 async function loadMasters() {
   customers.value = await listCustomers();
@@ -166,7 +263,11 @@ function resetForm() {
   form.title = "";
   form.detail = "";
   form.reminded = 0;
+  form.started_at = null;
+  form.finished_at = null;
   formRequiredAt.value = null;
+  formStartedAt.value = null;
+  formFinishedAt.value = null;
   attachments.value = [];
 }
 
@@ -184,7 +285,11 @@ async function openEdit(row: Item) {
   form.title = row.title;
   form.detail = row.detail;
   form.reminded = row.reminded;
+  form.started_at = row.started_at;
+  form.finished_at = row.finished_at;
   formRequiredAt.value = parseLocalDateTime(row.required_at);
+  formStartedAt.value = parseLocalDateTime(row.started_at);
+  formFinishedAt.value = parseLocalDateTime(row.finished_at);
   attachments.value = await listAttachments(row.id);
   showForm.value = true;
 }
@@ -199,6 +304,8 @@ async function saveItem() {
     return;
   }
   form.required_at = fromTimestamp(formRequiredAt.value);
+  form.started_at = fromTimestamp(formStartedAt.value);
+  form.finished_at = fromTimestamp(formFinishedAt.value);
   try {
     if (editingId.value == null) {
       await createItem({ ...form });
@@ -300,38 +407,243 @@ async function dropAttachment(attachment: Attachment) {
   }
 }
 
-const columns: DataTableColumns<Item> = [
-  { type: "selection" },
-  { title: "客户", key: "customer_name", width: 140 },
-  { title: "创建时间", key: "created_at", width: 170 },
-  { title: "要求时间", key: "required_at", width: 170 },
-  { title: "进度状态", key: "status_name", width: 110 },
-  { title: "需求", key: "title", ellipsis: { tooltip: true } },
-  { title: "详细内容", key: "detail", ellipsis: { tooltip: true } },
-  {
-    title: "是否提醒",
-    key: "reminded",
-    width: 100,
-    render: (row) => (row.reminded ? "是" : "否"),
-  },
-  {
-    title: "操作",
-    key: "actions",
-    width: 150,
-    render(row) {
-      return h(NSpace, { size: 8 }, () => [
-        h(NButton, { size: "small", onClick: () => void openEdit(row) }, () => "修改"),
-        h(
-          NButton,
-          { size: "small", type: "error", ghost: true, onClick: () => confirmDelete([row.id]) },
-          () => "删除"
-        ),
-      ]);
+const columns = computed<DataTableColumns<Item>>(() => {
+  const isEditing = editing.value;
+  const custOpts = customers.value.map((c) => ({ label: c.name, value: c.id }));
+  const statusOpts = statuses.value.map((s) => ({ label: s.name, value: s.id }));
+
+  return [
+    { type: "selection" },
+    {
+      title: "客户",
+      key: "customer_name",
+      width: isEditing ? 180 : 140,
+      render: isEditing
+        ? (row) =>
+            h(NSelect, {
+              value: row.customer_id,
+              options: custOpts,
+              filterable: true,
+              clearable: true,
+              size: "small",
+              style: { width: "100%" },
+              onUpdateValue: (v: number | null) => {
+                row.customer_id = v;
+                row.customer_name = customers.value.find((c) => c.id === v)?.name ?? null;
+              },
+            })
+        : undefined,
     },
-  },
-];
+    {
+      title: "创建时间",
+      key: "created_at",
+      width: 150,
+      render: (row) => formatDisplayDateTime(row.created_at),
+    },
+    {
+      title: "要求时间",
+      key: "required_at",
+      width: isEditing ? 200 : 150,
+      render: isEditing
+        ? (row) =>
+            h(NDatePicker, {
+              value: parseLocalDateTime(row.required_at),
+              type: "datetime",
+              format: "yyyy-MM-dd HH:mm",
+              clearable: true,
+              size: "small",
+              style: { width: "100%" },
+              onUpdateValue: (v: number | null) => {
+                row.required_at = fromTimestamp(v);
+              },
+            })
+        : (row) => formatDisplayDateTime(row.required_at),
+    },
+    {
+      title: "进度状态",
+      key: "status_name",
+      width: isEditing ? 150 : 110,
+      render: isEditing
+        ? (row) =>
+            h(NSelect, {
+              value: row.status_id,
+              options: statusOpts,
+              filterable: true,
+              clearable: true,
+              size: "small",
+              style: { width: "100%" },
+              onUpdateValue: (v: number | null) => {
+                row.status_id = v;
+                row.status_name = statuses.value.find((s) => s.id === v)?.name ?? null;
+              },
+            })
+        : undefined,
+    },
+    {
+      title: "耗时",
+      key: "elapsed_seconds",
+      width: 120,
+      render: (row) => displayElapsed(row, elapsedNow.value),
+    },
+    {
+      title: "开始时间",
+      key: "started_at",
+      width: isEditing ? 200 : 150,
+      render: isEditing
+        ? (row) =>
+            h(NDatePicker, {
+              value: parseLocalDateTime(row.started_at),
+              type: "datetime",
+              format: "yyyy-MM-dd HH:mm",
+              clearable: true,
+              size: "small",
+              style: { width: "100%" },
+              onUpdateValue: (v: number | null) => {
+                row.started_at = fromTimestamp(v);
+              },
+            })
+        : (row) => formatDisplayDateTime(row.started_at),
+    },
+    {
+      title: "完成时间",
+      key: "finished_at",
+      width: isEditing ? 200 : 150,
+      render: isEditing
+        ? (row) =>
+            h(NDatePicker, {
+              value: parseLocalDateTime(row.finished_at),
+              type: "datetime",
+              format: "yyyy-MM-dd HH:mm",
+              clearable: true,
+              size: "small",
+              style: { width: "100%" },
+              onUpdateValue: (v: number | null) => {
+                row.finished_at = fromTimestamp(v);
+              },
+            })
+        : (row) => formatDisplayDateTime(row.finished_at),
+    },
+    {
+      title: "需求",
+      key: "title",
+      width: isEditing ? 200 : undefined,
+      ellipsis: isEditing ? undefined : { tooltip: true },
+      render: isEditing
+        ? (row) =>
+            h(NInput, {
+              value: row.title,
+              size: "small",
+              onUpdateValue: (v: string) => {
+                row.title = v;
+              },
+            })
+        : undefined,
+    },
+    {
+      title: "详细内容",
+      key: "detail",
+      width: isEditing ? 260 : undefined,
+      render: isEditing
+        ? (row) =>
+            h(NInput, {
+              value: row.detail,
+              type: "textarea",
+              size: "small",
+              autosize: { minRows: 1, maxRows: 4 },
+              onUpdateValue: (v: string) => {
+                row.detail = v;
+              },
+            })
+        : (row) =>
+            h(
+              "div",
+              {
+                style: {
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  lineHeight: "1.5",
+                },
+              },
+              row.detail
+            ),
+    },
+    {
+      title: "是否提醒",
+      key: "reminded",
+      width: 100,
+      render: (row) =>
+        isEditing
+          ? h(NSwitch, {
+              value: row.reminded === 1,
+              size: "small",
+              onUpdateValue: (v: boolean) => {
+                row.reminded = v ? 1 : 0;
+              },
+            })
+          : row.reminded
+            ? "是"
+            : "否",
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 150,
+      render(row) {
+        return h(NSpace, { size: 8 }, () => [
+          h(
+            NButton,
+            {
+              size: "small",
+              disabled: isEditing,
+              onClick: () => void openEdit(row),
+            },
+            () => "修改"
+          ),
+          h(
+            NButton,
+            {
+              size: "small",
+              type: "error",
+              ghost: true,
+              disabled: isEditing,
+              onClick: () => confirmDelete([row.id]),
+            },
+            () => "删除"
+          ),
+        ]);
+      },
+    },
+  ];
+});
+
+onBeforeRouteLeave((_to, _from, next) => {
+  if (!hasUnsavedChanges()) {
+    clearEditState();
+    next();
+    return;
+  }
+  dialog.warning({
+    title: "未保存的修改",
+    content: "当前有未保存的修改，确定离开吗？",
+    positiveText: "离开",
+    negativeText: "取消",
+    onPositiveClick: () => {
+      clearEditState();
+      next();
+    },
+    onNegativeClick: () => {
+      next(false);
+    },
+    onClose: () => {
+      next(false);
+    },
+  });
+});
 
 onMounted(async () => {
+  elapsedTimer = window.setInterval(() => {
+    elapsedNow.value = Date.now();
+  }, 30_000);
   try {
     await loadMasters();
     const saved = await loadDefaultFilters();
@@ -340,6 +652,12 @@ onMounted(async () => {
     await search();
   } catch (e) {
     message.error(e instanceof Error ? e.message : String(e));
+  }
+});
+
+onUnmounted(() => {
+  if (elapsedTimer != null) {
+    window.clearInterval(elapsedTimer);
   }
 });
 </script>
@@ -358,10 +676,10 @@ onMounted(async () => {
           <n-input v-model:value="filters.detail" style="width: 160px" />
         </n-form-item>
         <n-form-item label="创建时间">
-          <n-date-picker v-model:value="createdRange" type="datetimerange" clearable />
+          <n-date-picker v-model:value="createdRange" type="datetimerange" format="yyyy-MM-dd HH:mm" clearable />
         </n-form-item>
         <n-form-item label="要求时间">
-          <n-date-picker v-model:value="requiredRange" type="datetimerange" clearable />
+          <n-date-picker v-model:value="requiredRange" type="datetimerange" format="yyyy-MM-dd HH:mm" clearable />
         </n-form-item>
         <n-form-item label="隐藏状态">
           <n-select
@@ -372,24 +690,33 @@ onMounted(async () => {
             style="min-width: 180px"
           />
         </n-form-item>
-        <n-button type="primary" @click="search">查找</n-button>
+        <n-button type="primary" :disabled="editing" @click="search">查找</n-button>
         <n-button @click="saveAsDefault">保存为默认条件</n-button>
       </n-space>
     </n-form>
 
     <n-space>
-      <n-button type="primary" @click="openCreate">新增事项</n-button>
-      <n-button :disabled="checked.length === 0" @click="openBatch">批量修改</n-button>
-      <n-button :disabled="checked.length === 0" @click="confirmDelete(checked)">批量删除</n-button>
+      <n-button type="primary" :disabled="editing" @click="openCreate">新增事项</n-button>
+      <n-button
+        :type="editing ? 'primary' : 'default'"
+        :loading="savingEdits"
+        @click="toggleEditMode"
+      >
+        {{ editing ? "保存" : "编辑" }}
+      </n-button>
+      <n-button :disabled="editing || checked.length === 0" @click="openBatch">批量修改</n-button>
+      <n-button :disabled="editing || checked.length === 0" @click="confirmDelete(checked)">
+        批量删除
+      </n-button>
     </n-space>
 
     <n-data-table
       :columns="columns"
-      :data="rows"
+      :data="tableData"
       :loading="loading"
       :row-key="(row: Item) => row.id"
       v-model:checked-row-keys="checked"
-      :scroll-x="1200"
+      :scroll-x="tableScrollX"
     />
 
     <n-modal
@@ -417,7 +744,13 @@ onMounted(async () => {
           />
         </n-form-item>
         <n-form-item label="要求时间">
-          <n-date-picker v-model:value="formRequiredAt" type="datetime" clearable style="width: 100%" />
+          <n-date-picker v-model:value="formRequiredAt" type="datetime" format="yyyy-MM-dd HH:mm" clearable style="width: 100%" />
+        </n-form-item>
+        <n-form-item label="开始时间">
+          <n-date-picker v-model:value="formStartedAt" type="datetime" format="yyyy-MM-dd HH:mm" clearable style="width: 100%" />
+        </n-form-item>
+        <n-form-item label="完成时间">
+          <n-date-picker v-model:value="formFinishedAt" type="datetime" format="yyyy-MM-dd HH:mm" clearable style="width: 100%" />
         </n-form-item>
         <n-form-item label="需求">
           <n-input v-model:value="form.title" />
@@ -477,6 +810,7 @@ onMounted(async () => {
             <n-date-picker
               v-model:value="batchRequiredAt"
               type="datetime"
+              format="yyyy-MM-dd HH:mm"
               clearable
               :disabled="!batchFields.includes('required_at')"
             />

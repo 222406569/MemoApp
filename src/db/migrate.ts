@@ -135,6 +135,53 @@ async function applyMigration2(): Promise<void> {
   }
 }
 
+async function applyMigration3(): Promise<void> {
+  const db = await getDb();
+  const needsSegment = !(await hasColumn("items", "segment_started_at"));
+  const needsElapsed = !(await hasColumn("items", "elapsed_seconds"));
+  await db.execute("BEGIN");
+  try {
+    if (needsSegment) {
+      await db.execute("ALTER TABLE items ADD COLUMN segment_started_at TEXT");
+    }
+    if (needsElapsed) {
+      await db.execute(
+        "ALTER TABLE items ADD COLUMN elapsed_seconds INTEGER NOT NULL DEFAULT 0"
+      );
+    }
+    await db.execute(
+      `INSERT INTO statuses (name, sort_priority)
+       SELECT '暂停', 25
+       WHERE NOT EXISTS (SELECT 1 FROM statuses WHERE name = '暂停')`
+    );
+    await db.execute("INSERT INTO schema_migrations (version) VALUES (3)");
+    await db.execute("COMMIT");
+  } catch (error) {
+    await db.execute("ROLLBACK");
+    throw error;
+  }
+}
+
+async function applyMigration4(): Promise<void> {
+  const db = await getDb();
+  const needsStarted = !(await hasColumn("items", "started_at"));
+  const needsFinished = !(await hasColumn("items", "finished_at"));
+  await db.execute("BEGIN");
+  try {
+    if (needsStarted) {
+      await db.execute("ALTER TABLE items ADD COLUMN started_at TEXT");
+    }
+    if (needsFinished) {
+      await db.execute("ALTER TABLE items ADD COLUMN finished_at TEXT");
+    }
+    await db.execute("INSERT INTO schema_migrations (version) VALUES (4)");
+    await db.execute("COMMIT");
+  } catch (error) {
+    await db.execute("ROLLBACK");
+    throw error;
+  }
+}
+
 export async function migrate(): Promise<void> {
   const db = await getDb();
   await db.execute("PRAGMA foreign_keys = ON");
@@ -152,5 +199,11 @@ export async function migrate(): Promise<void> {
   }
   if (!applied.has(2)) {
     await applyMigration2();
+  }
+  if (!applied.has(3)) {
+    await applyMigration3();
+  }
+  if (!applied.has(4)) {
+    await applyMigration4();
   }
 }

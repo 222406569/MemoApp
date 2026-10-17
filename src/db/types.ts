@@ -49,6 +49,10 @@ export type Item = {
   detail: string;
   reminded: number;
   last_reminded_at: string | null;
+  segment_started_at: string | null;
+  elapsed_seconds: number;
+  started_at: string | null;
+  finished_at: string | null;
   customer_name: string | null;
   status_name: string | null;
 };
@@ -60,6 +64,8 @@ export type ItemWrite = {
   title: string;
   detail: string;
   reminded: number;
+  started_at: string | null;
+  finished_at: string | null;
 };
 
 export type ItemBatchPatch = Partial<
@@ -136,6 +142,18 @@ export function formatLocalDateTime(d: Date): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
+export function formatDisplayDateTime(value: string | null | undefined): string {
+  if (!value) {
+    return "";
+  }
+  const ts = parseLocalDateTime(value);
+  if (ts == null) {
+    return value;
+  }
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
 export function parseLocalDateTime(value: string | null): number | null {
   if (!value) {
     return null;
@@ -161,4 +179,35 @@ export function shiftHours(base: Date, hours: number): Date {
 
 export function shiftMinutes(base: Date, minutes: number): Date {
   return new Date(base.getTime() + minutes * 60 * 1000);
+}
+
+export function formatElapsed(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  if (seconds < 60) {
+    return "不到1分钟";
+  }
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const remain = minutes % 60;
+  if (hours <= 0) {
+    return `${remain}分钟`;
+  }
+  if (remain === 0) {
+    return `${hours}小时`;
+  }
+  return `${hours}小时${remain}分钟`;
+}
+
+export function displayElapsed(
+  item: Pick<Item, "status_name" | "segment_started_at" | "elapsed_seconds">,
+  now: number
+): string {
+  let seconds = item.elapsed_seconds ?? 0;
+  if (item.status_name === "进行中" && item.segment_started_at) {
+    const start = parseLocalDateTime(item.segment_started_at);
+    if (start != null) {
+      seconds += Math.max(0, Math.floor((now - start) / 1000));
+    }
+  }
+  return formatElapsed(seconds);
 }

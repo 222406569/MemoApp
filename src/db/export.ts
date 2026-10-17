@@ -2,7 +2,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import * as XLSX from "xlsx";
 import { listAttachmentsForItems } from "./attachments";
-import type { Item } from "./types";
+import { displayElapsed, formatDisplayDateTime, type Item } from "./types";
 
 export type ItemExporter = {
   label: string;
@@ -34,8 +34,11 @@ function rowsOf(items: Item[], names: Map<number, string>): Record<string, strin
   return items.map((item) => ({
     客户: item.customer_name ?? "",
     进度状态: item.status_name ?? "",
-    创建时间: item.created_at,
-    要求时间: item.required_at ?? "",
+    耗时: displayElapsed(item, Date.now()),
+    创建时间: formatDisplayDateTime(item.created_at),
+    要求时间: formatDisplayDateTime(item.required_at),
+    开始时间: formatDisplayDateTime(item.started_at),
+    完成时间: formatDisplayDateTime(item.finished_at),
     需求: item.title,
     详细内容: item.detail,
     是否提醒: item.reminded ? "是" : "否",
@@ -63,8 +66,11 @@ export const CsvExporter: ItemExporter = {
     const headers = Object.keys(rows[0] ?? {
       客户: "",
       进度状态: "",
+      耗时: "",
       创建时间: "",
       要求时间: "",
+      开始时间: "",
+      完成时间: "",
       需求: "",
       详细内容: "",
       是否提醒: "",

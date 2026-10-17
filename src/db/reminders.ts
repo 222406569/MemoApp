@@ -6,6 +6,7 @@ import {
 import { getDb } from "./client";
 import { markReminded } from "./items";
 import {
+  formatDisplayDateTime,
   formatLocalDateTime,
   shiftHours,
   shiftMinutes,
@@ -209,7 +210,8 @@ export async function findItemsToRemind(): Promise<Item[]> {
   }
   return db.select<Item[]>(
     `SELECT i.id, i.customer_id, i.status_id, i.created_at, i.required_at, i.title, i.detail, i.reminded,
-            i.last_reminded_at, c.name AS customer_name, s.name AS status_name
+            i.last_reminded_at, i.segment_started_at, i.elapsed_seconds, i.started_at, i.finished_at,
+            c.name AS customer_name, s.name AS status_name
      FROM items i
      LEFT JOIN customers c ON c.id = i.customer_id
      LEFT JOIN statuses s ON s.id = i.status_id
@@ -238,7 +240,7 @@ export async function scanAndNotify(): Promise<number> {
     try {
       sendNotification({
         title: item.title || "工作备忘录",
-        body: [item.customer_name, item.status_name, item.required_at]
+        body: [item.customer_name, item.status_name, formatDisplayDateTime(item.required_at)]
           .filter(Boolean)
           .join(" · "),
       });
